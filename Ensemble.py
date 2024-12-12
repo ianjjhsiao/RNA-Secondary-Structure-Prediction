@@ -44,8 +44,6 @@ class RNADataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.data[idx]
-
-        # Optionally pad/truncate sequences and structures to max_len
         if self.max_len:
             item["sequence"] = self._pad_or_truncate(item["sequence"], self.max_len)
             item["true_structure"] = self._pad_or_truncate(item["true_structure"], self.max_len)
@@ -65,7 +63,6 @@ class RNADataset(Dataset):
         }
 
     def _pad_or_truncate(self, sequence, max_len):
-        """Pads or truncates a sequence to the specified length."""
         if len(sequence) < max_len:
             return sequence + [0] * (max_len - len(sequence))
         return sequence[:max_len]
@@ -87,20 +84,7 @@ class TransformerModel(nn.Module):
         return x
 
 
-# Evaluation function for structure prediction
 def evaluate_file(model, file_path, dataset, max_len):
-    """
-    Evaluates the model on a single RNA sequence file to predict the structure.
-
-    Args:
-        model (nn.Module): The trained Transformer model.
-        file_path (str): Path to the RNA structure file.
-        dataset (RNADataset): The dataset object for tokenization.
-        max_len (int): Maximum sequence length for padding/truncation.
-
-    Returns:
-        str: The predicted RNA structure.
-    """
     model.eval()
     with open(file_path, 'r') as file:
         lines = file.read().strip().split('\n')
@@ -136,7 +120,6 @@ if __name__ == "__main__":
     dataset = RNADataset(directory, max_len=max_len)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    # Define the model, loss, and optimizer
     vocab_size = len(dataset.sequence_vocab) + 1  # +1 for padding index
     model = TransformerModel(vocab_size, embed_size, num_heads, hidden_dim, num_layers, max_len)
     criterion = nn.CrossEntropyLoss()
