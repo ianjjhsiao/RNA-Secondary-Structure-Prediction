@@ -1,29 +1,16 @@
 import os
 from torch.utils.data import Dataset, DataLoader
 import torch
+import torch.nn as nn
+import torch.optim as optim
 
 
 def tokenize_sequence(sequence, vocab):
-    """
-    Converts a sequence of RNA nucleotides or structure annotations into a list of indices.
-
-    Args:
-        sequence (str): The RNA sequence or structure.
-        vocab (dict): A dictionary mapping characters to indices.
-
-    Returns:
-        list: A list of token indices.
-    """
     return [vocab[char.upper()] for char in sequence]
 
 
 class RNADataset(Dataset):
     def __init__(self, directory, max_len=None):
-        """
-        Args:
-            directory (str): Path to the directory containing RNA structure files.
-            max_len (int, optional): Maximum sequence length for padding/truncation.
-        """
         self.data = []
         self.max_len = max_len
 
@@ -84,15 +71,96 @@ class RNADataset(Dataset):
         return sequence[:max_len]
 
 
-# Example usage
-directory = "eterna_data/StructureData/ensemble_train_set"
-max_len = 128  # Specify a maximum length for the sequences (if needed)
-dataset = RNADataset(directory, max_len=max_len)
-dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+class TransformerModel(nn.Module):
+    def __init__(self, vocab_size, embed_size, num_heads, hidden_dim, num_layers, max_len):
+        super(TransformerModel, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.positional_encoding = nn.Parameter(torch.zeros(1, max_len, embed_size))
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_size, nhead=num_heads, dim_feedforward=hidden_dim)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(embed_size, vocab_size)
 
-# Iterate over the dataloader
-for batch in dataloader:
-    print("Sequence batch:", batch["sequence"].shape)
-    print("True structure batch:", batch["true_structure"].shape)
-    print("Predictions batch:", batch["predictions"].shape)
-    break
+    def forward(self, x):
+        x = self.embedding(x) + self.positional_encoding[:, :x.size(1), :]
+        x = self.transformer(x)
+        x = self.fc(x)
+        return x
+
+
+# Evaluation function for structure prediction
+def evaluate_file(model, file_path, dataset, max_len):
+    """
+    Evaluates the model on a single RNA sequence file to predict the structure.
+
+    Args:
+        model (nn.Module): The trained Transformer model.
+        file_path (str): Path to the RNA structure file.
+        dataset (RNADataset): The dataset object for tokenization.
+        max_len (int): Maximum sequence length for padding/truncation.
+
+    Returns:
+        str: The predicted RNA structure.
+    """
+    model.eval()
+    with open(file_path, 'r') as file:
+        lines = file.read().strip().split('\n')
+        sequence = lines[2]
+
+        tokenized_sequence = dataset._pad_or_truncate(
+            tokenize_sequence(sequence, dataset.sequence_vocab), max_len
+        )
+        input_tensor = torch.tensor([tokenized_sequence], dtype=torch.long)
+
+        with torch.no_grad():
+            output = model(input_tensor).argmax(dim=-1).squeeze(0)
+
+        idx_to_char = {idx: char for char, idx in dataset.structure_vocab.items()}
+        predicted_structure = ''.join(idx_to_char[idx.item()] for idx in output if idx.item() != 0)
+
+    return predicted_structure
+
+
+# Training the Transformer
+if __name__ == "__main__":
+    directory = "eterna_data/StructureData/ensemble_train_set"
+    max_len = 128  # Specify a maximum length for the sequences (if needed)
+    batch_size = 16
+    embed_size = 64
+    num_heads = 4
+    hidden_dim = 256
+    num_layers = 2
+    num_epochs = 100
+    learning_rate = 0.001
+
+    # Prepare dataset and dataloader
+    dataset = RNADataset(directory, max_len=max_len)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # Define the model, loss, and optimizer
+    vocab_size = len(dataset.sequence_vocab) + 1  # +1 for padding index
+    model = TransformerModel(vocab_size, embed_size, num_heads, hidden_dim, num_layers, max_len)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # Training loop
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        for batch in dataloader:
+            optimizer.zero_grad()
+            inputs = batch["sequence"]  # Use true structure as input
+            targets = batch["true_structure"]  # Use sequence as target
+
+            outputs = model(inputs)
+            loss = criterion(outputs.view(-1, vocab_size), targets.view(-1))
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader):.4f}")
+
+    # Example of evaluation
+    test_file_path = "eterna_data/StructureData/test_sample.txt"
+    predicted_struct = evaluate_file(model, test_file_path, dataset, max_len)
+    print(f"Predicted Structure: {predicted_struct}")
